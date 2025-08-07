@@ -37,7 +37,7 @@ class BertSentimentClassifier(torch.nn.Module):
     def __init__(self, config):
         super(BertSentimentClassifier, self).__init__()
         self.num_labels = config.num_labels
-        self.bert = BertModel.from_pretrained('bert-base-uncased')
+        self.bert = BertModel.from_pretrained('./bert-base-uncased-local') # load locally
 
         # Pretrain mode does not require updating BERT paramters.
         assert config.fine_tune_mode in ["last-linear-layer", "full-model"]
@@ -49,7 +49,11 @@ class BertSentimentClassifier(torch.nn.Module):
 
         # Create any instance variables you need to classify the sentiment of BERT embeddings.
         ### TODO
-        raise NotImplementedError
+
+        self.pool_dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        self.pool_linear = torch.nn.Linear(config.hidden_size, self.num_labels)
+
+        #raise NotImplementedError
 
 
     def forward(self, input_ids, attention_mask):
@@ -58,6 +62,12 @@ class BertSentimentClassifier(torch.nn.Module):
         # HINT: You should consider what is an appropriate return value given that
         # the training loop currently uses F.cross_entropy as the loss function.
         ### TODO
+
+        outputs = self.bert(input_ids, attention_mask)
+        pooler_output = outputs['pooler_output']
+
+        return self.pool_linear(self.pool_dropout(pooler_output))
+
         raise NotImplementedError
 
 
@@ -66,7 +76,7 @@ class SentimentDataset(Dataset):
     def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local') # load locally
 
     def __len__(self):
         return len(self.dataset)
@@ -79,7 +89,7 @@ class SentimentDataset(Dataset):
         labels = [x[1] for x in data]
         sent_ids = [x[2] for x in data]
 
-        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
+        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True, max_length=512)
         token_ids = torch.LongTensor(encoding['input_ids'])
         attention_mask = torch.LongTensor(encoding['attention_mask'])
         labels = torch.LongTensor(labels)
@@ -104,7 +114,7 @@ class SentimentTestDataset(Dataset):
     def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local')
 
     def __len__(self):
         return len(self.dataset)
@@ -116,7 +126,7 @@ class SentimentTestDataset(Dataset):
         sents = [x[0] for x in data]
         sent_ids = [x[1] for x in data]
 
-        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True)
+        encoding = self.tokenizer(sents, return_tensors='pt', padding=True, truncation=True, max_length=512)
         token_ids = torch.LongTensor(encoding['input_ids'])
         attention_mask = torch.LongTensor(encoding['attention_mask'])
 
@@ -140,13 +150,13 @@ def load_data(filename, flag='train'):
     num_labels = {}
     data = []
     if flag == 'test':
-        with open(filename, 'r') as fp:
+        with open(filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()
                 data.append((sent,sent_id))
     else:
-        with open(filename, 'r') as fp:
+        with open(filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()

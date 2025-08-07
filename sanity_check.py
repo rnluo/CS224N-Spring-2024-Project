@@ -8,7 +8,7 @@ sent_ids = torch.tensor([[101, 7592, 2088, 102, 0, 0, 0, 0],
 att_mask = torch.tensor([[1, 1, 1, 1, 0, 0, 0, 0],[1, 1, 1, 1, 1, 1, 1, 1]])
 
 # Load model.
-bert = BertModel.from_pretrained('bert-base-uncased')
+bert = BertModel.from_pretrained('./bert-base-uncased-local') # download the model files manually first
 outputs = bert(sent_ids, att_mask)
 att_mask = att_mask.unsqueeze(-1)
 outputs['last_hidden_state'] = outputs['last_hidden_state'] * att_mask
