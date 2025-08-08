@@ -28,7 +28,7 @@ class SentenceClassificationDataset(Dataset):
     def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local')
 
     def __len__(self):
         return len(self.dataset)
@@ -68,7 +68,7 @@ class SentenceClassificationTestDataset(Dataset):
     def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local')
 
     def __len__(self):
         return len(self.dataset)
@@ -104,7 +104,7 @@ class SentencePairDataset(Dataset):
         self.dataset = dataset
         self.p = args
         self.isRegression = isRegression 
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local')
 
     def __len__(self):
         return len(self.dataset)
@@ -161,7 +161,7 @@ class SentencePairTestDataset(Dataset):
     def __init__(self, dataset, args):
         self.dataset = dataset
         self.p = args
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.tokenizer = BertTokenizer.from_pretrained('./bert-base-uncased-local')
 
     def __len__(self):
         return len(self.dataset)
@@ -212,13 +212,13 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
     sentiment_data = []
     num_labels = {}
     if split == 'test':
-        with open(sentiment_filename, 'r') as fp:
+        with open(sentiment_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()
                 sentiment_data.append((sent,sent_id))
     else:
-        with open(sentiment_filename, 'r') as fp:
+        with open(sentiment_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent = record['sentence'].lower().strip()
                 sent_id = record['id'].lower().strip()
@@ -231,7 +231,7 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
 
     paraphrase_data = []
     if split == 'test':
-        with open(paraphrase_filename, 'r') as fp:
+        with open(paraphrase_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent_id = record['id'].lower().strip()
                 paraphrase_data.append((preprocess_string(record['sentence1']),
@@ -239,7 +239,7 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
                                         sent_id))
 
     else:
-        with open(paraphrase_filename, 'r') as fp:
+        with open(paraphrase_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 try:
                     sent_id = record['id'].lower().strip()
@@ -253,14 +253,14 @@ def load_multitask_data(sentiment_filename,paraphrase_filename,similarity_filena
 
     similarity_data = []
     if split == 'test':
-        with open(similarity_filename, 'r') as fp:
+        with open(similarity_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent_id = record['id'].lower().strip()
                 similarity_data.append((preprocess_string(record['sentence1']),
                                         preprocess_string(record['sentence2'])
                                         ,sent_id))
     else:
-        with open(similarity_filename, 'r') as fp:
+        with open(similarity_filename, 'r', encoding='utf-8') as fp:
             for record in csv.DictReader(fp,delimiter = '\t'):
                 sent_id = record['id'].lower().strip()
                 similarity_data.append((preprocess_string(record['sentence1']),
