@@ -19,6 +19,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard.writer import SummaryWriter
+import datetime
 
 from bert import BertModel
 from optimizer import AdamW
@@ -34,6 +36,7 @@ from datasets import (
 
 from evaluation import model_eval_sst, model_eval_multitask, model_eval_test_multitask
 
+from itertools import permutations
 
 TQDM_DISABLE=False
 
@@ -78,6 +81,7 @@ class MultitaskBERT(nn.Module):
         self.sentiment_classifier = torch.nn.Linear(config.hidden_size, self.num_labels)
         self.paraphrase_classifier = torch.nn.Linear(2 * config.hidden_size, 1)
         self.similarity_classifier = torch.nn.Linear(2 * config.hidden_size, 1)
+        
         self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
 
         #raise NotImplementedError
@@ -146,6 +150,18 @@ class MultitaskBERT(nn.Module):
         return self.similarity_classifier(embedding_cat)
     
         raise NotImplementedError
+    
+    def predict_cosine_similarity(self,
+                           input_ids_1, attention_mask_1,
+                           input_ids_2, attention_mask_2):
+        '''Given a batch of pairs of sentences, outputs the cosine embedding loss.
+        '''
+        ### TODO
+
+        embedding_1 = self.forward(input_ids_1, attention_mask_1)
+        embedding_2 = self.forward(input_ids_2, attention_mask_2)
+
+        return F.cosine_similarity(embedding_1, embedding_2, dim=1)
 
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
@@ -171,6 +187,9 @@ def train_multitask(args):
     in datasets.py to load in examples from the Quora and SemEval datasets.
     '''
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
+
+    writer = SummaryWriter(f'tf-logs/{datetime.datetime.now().strftime('%m/%d, %H%M%S') + args.filepath.replace(".pt", "")}')
+    
     # Create the data and its corresponding datasets and dataloader.
     sst_train_data, num_labels, para_train_data, sts_train_data = load_multitask_data(args.sst_train,args.para_train,args.sts_train, split ='train')
     sst_dev_data, _, para_dev_data, sts_dev_data = load_multitask_data(args.sst_dev,args.para_dev,args.sts_dev, split ='train')
@@ -209,6 +228,7 @@ def train_multitask(args):
     config = SimpleNamespace(**config)
 
     model = MultitaskBERT(config)
+    model.args = args
     model = model.to(device)
 
     lr = args.lr
@@ -226,6 +246,8 @@ def train_multitask(args):
         sts_iter = iter(sts_train_dataloader)
 
         for _ in tqdm(range(len(para_train_dataloader)), desc=f'train-{epoch}', disable=TQDM_DISABLE):
+            global_step = epoch * len(para_train_dataloader) + _
+
             optimizer.zero_grad()
 
             try:
@@ -240,12 +262,6 @@ def train_multitask(args):
             sst_logits = model.predict_sentiment(sst_ids, sst_mask)
             sst_loss = F.cross_entropy(sst_logits, sst_labels.view(-1), reduction='sum') / args.batch_size
         
-            #try:
-            #    para_batch = next(para_iter)
-            #except StopIteration:
-            #    para_iter = iter(para_train_dataloader)
-            #    para_batch = next(para_iter)
-
             para_batch = next(para_iter)
 
             para_ids_1, para_mask_1, para_ids_2, para_mask_2, para_labels = (para_batch['token_ids_1'].to(device),
@@ -265,14 +281,54 @@ def train_multitask(args):
             sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2, sts_labels = (sts_batch['token_ids_1'].to(device),
                                     sts_batch['attention_mask_1'].to(device), sts_batch['token_ids_2'].to(device),
                                     sts_batch['attention_mask_2'].to(device), sts_batch['labels'].to(device))
-
-            sts_logits = model.predict_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
-            sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze(), reduction='sum') / args.batch_size
             
+            # Simple cosine similarity
+            if args.cos_sim:
+                sts_similarity = model.predict_cosine_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
+                sts_loss = F.mse_loss(sts_similarity, sts_labels.float() / 5)
+            else:
+                sts_logits = model.predict_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
+                sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze(), reduction='sum') / args.batch_size
+            
+            # PCGrad implementation
+            if args.pcgrad:
+                optimizer.zero_grad()
+                sst_loss.backward(retain_graph=True)
+                sst_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
+
+                optimizer.zero_grad()
+                para_loss.backward(retain_graph=True)
+                para_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
+
+                optimizer.zero_grad()
+                sts_loss.backward()
+                sts_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
+                
+                grads = {'sst': sst_grad, 'para': para_grad, 'sts': sts_grad}
+
+                for task_i, task_j in permutations(grads.keys(), 2):
+                    g_i, g_j = grads[task_i], grads[task_j]
+                    dot_product = sum(torch.sum(g_ik * g_jk) for g_ik, g_jk in zip(g_i, g_j))
+        
+                    if dot_product < 0:
+                        scale = dot_product / sum(torch.sum(g_jk * g_jk) for g_jk in g_j)
+                        grads[task_i] = [g_ik - scale * g_jk for g_ik, g_jk in zip(g_i, g_j)]
+
+                optimizer.zero_grad()
+                for k, p in enumerate(model.bert.parameters()):
+                    if p.grad != None:
+                        p.grad = grads['sst'][k] + grads['para'][k] + grads['sts'][k]
+            else:
+                loss = sst_loss + para_loss + sts_loss
+                loss.backward()
 
             loss = sst_loss + para_loss + sts_loss
 
-            loss.backward()
+            writer.add_scalar('loss/train_total', loss, global_step)
+            writer.add_scalar('loss/train_sst', sst_loss, global_step)
+            writer.add_scalar('loss/train_para', para_loss, global_step)
+            writer.add_scalar('loss/train_sts', sts_loss, global_step)
+
             optimizer.step()
 
             train_loss += loss.item()
@@ -280,11 +336,17 @@ def train_multitask(args):
         
         train_loss = train_loss / (num_batches)
 
+        writer.add_scalar('loss/train_epoch', train_loss, epoch)
+
         # train_acc, train_f1, *_ = model_eval_sst(sst_train_dataloader, model, device)
         # dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
 
         sentiment_accuracy, _, _, paraphrase_accuracy, _, _, sts_corr, _, _ \
             = model_eval_multitask(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, model, device)
+        
+        writer.add_scalar('accuracy/dev_sentiment', sentiment_accuracy, epoch)
+        writer.add_scalar('accuracy/dev_paraphrase', paraphrase_accuracy, epoch)
+        writer.add_scalar('correlation/dev_sts', sts_corr, epoch)
 
         if paraphrase_accuracy > best_dev_acc:
            best_dev_acc = paraphrase_accuracy
@@ -294,6 +356,7 @@ def train_multitask(args):
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}")
 
+    writer.close()
 
 def test_multitask(args):
     '''Test and save predictions on the dev and test sets of all three tasks.'''
@@ -304,6 +367,7 @@ def test_multitask(args):
 
         model = MultitaskBERT(config)
         model.load_state_dict(saved['model'])
+        model.args = args
         model = model.to(device)
         print(f"Loaded model to test from {args.filepath}")
 
@@ -402,7 +466,7 @@ def get_args():
     parser.add_argument("--fine-tune-mode", type=str,
                         help='last-linear-layer: the BERT parameters are frozen and the task specific head parameters are updated; full-model: BERT parameters are updated as well',
                         choices=('last-linear-layer', 'full-model'), default="last-linear-layer")
-    parser.add_argument("--use_gpu", action='store_true')
+    parser.add_argument("--use_gpu", type=bool, default=True)
 
     parser.add_argument("--sst_dev_out", type=str, default="predictions/sst-dev-output.csv")
     parser.add_argument("--sst_test_out", type=str, default="predictions/sst-test-output.csv")
@@ -416,6 +480,11 @@ def get_args():
     parser.add_argument("--batch_size", help='sst: 64, cfimdb: 8 can fit a 12GB GPU', type=int, default=64)
     parser.add_argument("--hidden_dropout_prob", type=float, default=0.3)
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
+
+    # Custom arguments
+    #parser.add_argument("--multitask_alternate", type=bool, help="Train alternately among the tasks", default=True)
+    parser.add_argument("--pcgrad", type=bool, default=False)
+    parser.add_argument("--cos_sim", type=bool, default=False)
 
     args = parser.parse_args()
     return args

@@ -116,7 +116,12 @@ def model_eval_multitask(sentiment_dataloader,
             b_ids2 = b_ids2.to(device)
             b_mask2 = b_mask2.to(device)
 
-            logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+            # Evaluation logic for cosine similarity
+            if model.args.cos_sim:
+                logits = 5 * model.predict_cosine_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+            else:
+                logits = model.predict_similarity(b_ids1, b_mask1, b_ids2, b_mask2)
+            
             y_hat = logits.flatten().cpu().numpy()
             b_labels = b_labels.flatten().cpu().numpy()
 
