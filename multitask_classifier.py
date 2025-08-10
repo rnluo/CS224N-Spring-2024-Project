@@ -78,11 +78,38 @@ class MultitaskBERT(nn.Module):
         ### TODO
 
         self.num_labels = 5 # 5 sentiment classes
-        self.sentiment_classifier = torch.nn.Linear(config.hidden_size, self.num_labels)
-        self.paraphrase_classifier = torch.nn.Linear(2 * config.hidden_size, 1)
-        self.similarity_classifier = torch.nn.Linear(2 * config.hidden_size, 1)
-        
-        self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+        # Linear classifiers
+        #self.sentiment_classifier = nn.Linear(config.hidden_size, self.num_labels)
+        #self.paraphrase_classifier = nn.Linear(2 * config.hidden_size, 1)
+        #self.similarity_classifier = nn.Linear(2 * config.hidden_size, 1)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+
+        # MLP for classification
+        self.sentiment_classifier = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            self.dropout,
+            nn.Linear(config.hidden_size, self.num_labels)
+            )
+        self.paraphrase_classifier = nn.Sequential(
+            nn.Linear(2 * config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            self.dropout,
+            nn.Linear(config.hidden_size, 1)
+            )   
+        self.similarity_classifier = nn.Sequential(
+            nn.Linear(2 * config.hidden_size, config.hidden_size),
+            nn.ReLU(),
+            self.dropout,
+            nn.Linear(config.hidden_size, 1)
+            )
+
+        # Parameters for uncertainty weighting
+        self.sst_logvar = nn.Parameter(torch.zeros(1))
+        self.para_logvar = nn.Parameter(torch.zeros(1))
+        self.sts_logvar = nn.Parameter(torch.zeros(1))
+
+        #
 
         #raise NotImplementedError
 
@@ -245,8 +272,14 @@ def train_multitask(args):
         para_iter = iter(para_train_dataloader)
         sts_iter = iter(sts_train_dataloader)
 
-        for _ in tqdm(range(len(para_train_dataloader)), desc=f'train-{epoch}', disable=TQDM_DISABLE):
-            global_step = epoch * len(para_train_dataloader) + _
+        # Set number of training steps per epoch
+        if args.undersample:
+            training_steps = min(len(sst_train_dataloader), len(para_train_dataloader), len(sts_train_dataloader))
+        else:
+            training_steps = max(len(sst_train_dataloader), len(para_train_dataloader), len(sts_train_dataloader))
+
+        for _ in tqdm(range(training_steps), desc=f'train-{epoch}', disable=TQDM_DISABLE):
+            global_step = epoch * training_steps + _
 
             optimizer.zero_grad()
 
@@ -255,28 +288,27 @@ def train_multitask(args):
             except StopIteration:
                 sst_iter = iter(sst_train_dataloader)
                 sst_batch = next(sst_iter)
-
-            sst_ids, sst_mask, sst_labels = (sst_batch['token_ids'].to(device),
-                                    sst_batch['attention_mask'].to(device), sst_batch['labels'].to(device))
-
-            sst_logits = model.predict_sentiment(sst_ids, sst_mask)
-            sst_loss = F.cross_entropy(sst_logits, sst_labels.view(-1), reduction='sum') / args.batch_size
-        
+                    
             para_batch = next(para_iter)
-
-            para_ids_1, para_mask_1, para_ids_2, para_mask_2, para_labels = (para_batch['token_ids_1'].to(device),
-                                    para_batch['attention_mask_1'].to(device), para_batch['token_ids_2'].to(device),
-                                    para_batch['attention_mask_2'].to(device), para_batch['labels'].to(device))
-
-            para_logits = model.predict_paraphrase(para_ids_1, para_mask_1, para_ids_2, para_mask_2)
-            para_loss = F.binary_cross_entropy_with_logits(para_logits.squeeze(), para_labels.float().squeeze(), reduction='sum') / args.batch_size
-            
 
             try:
                 sts_batch = next(sts_iter)
             except StopIteration:
                 sts_iter = iter(sts_train_dataloader)
                 sts_batch = next(sts_iter)
+
+            sst_ids, sst_mask, sst_labels = (sst_batch['token_ids'].to(device),
+                                    sst_batch['attention_mask'].to(device), sst_batch['labels'].to(device))
+
+            sst_logits = model.predict_sentiment(sst_ids, sst_mask)
+            sst_loss = F.cross_entropy(sst_logits, sst_labels.view(-1), reduction='mean')
+
+            para_ids_1, para_mask_1, para_ids_2, para_mask_2, para_labels = (para_batch['token_ids_1'].to(device),
+                                    para_batch['attention_mask_1'].to(device), para_batch['token_ids_2'].to(device),
+                                    para_batch['attention_mask_2'].to(device), para_batch['labels'].to(device))
+
+            para_logits = model.predict_paraphrase(para_ids_1, para_mask_1, para_ids_2, para_mask_2)
+            para_loss = F.binary_cross_entropy_with_logits(para_logits.squeeze(), para_labels.float().squeeze(), reduction='mean')
 
             sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2, sts_labels = (sts_batch['token_ids_1'].to(device),
                                     sts_batch['attention_mask_1'].to(device), sts_batch['token_ids_2'].to(device),
@@ -285,10 +317,10 @@ def train_multitask(args):
             # Simple cosine similarity
             if args.cos_sim:
                 sts_similarity = model.predict_cosine_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
-                sts_loss = F.mse_loss(sts_similarity, sts_labels.float() / 5)
+                sts_loss = F.mse_loss(sts_similarity, sts_labels.float() / 5.0)
             else:
                 sts_logits = model.predict_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
-                sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze(), reduction='sum') / args.batch_size
+                sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze() / 5.0, reduction='mean')
             
             # PCGrad implementation
             if args.pcgrad:
@@ -301,9 +333,15 @@ def train_multitask(args):
                 para_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
 
                 optimizer.zero_grad()
-                sts_loss.backward()
+                sts_loss.backward(retain_graph=True)
                 sts_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
                 
+                # Sample weighted PCGrad
+                if args.pcgrad_w:
+                    sst_grad = [grad / len(sst_train_dataloader) for grad in sst_grad]
+                    para_grad = [grad / len(para_train_dataloader) for grad in para_grad]
+                    sts_grad = [grad / len(sts_train_dataloader) for grad in sts_grad]
+
                 grads = {'sst': sst_grad, 'para': para_grad, 'sts': sts_grad}
 
                 for task_i, task_j in permutations(grads.keys(), 2):
@@ -315,9 +353,20 @@ def train_multitask(args):
                         grads[task_i] = [g_ik - scale * g_jk for g_ik, g_jk in zip(g_i, g_j)]
 
                 optimizer.zero_grad()
-                for k, p in enumerate(model.bert.parameters()):
+                loss = sst_loss + para_loss + sts_loss
+                loss.backward()
+
+                for k, p in enumerate(model.parameters()):
                     if p.grad != None:
                         p.grad = grads['sst'][k] + grads['para'][k] + grads['sts'][k]
+            
+            # Uncertainty weighting implementation
+            elif args.u_w:
+                loss = torch.exp(-model.sst_logvar) * sst_loss + model.sst_logvar \
+                    + torch.exp(-model.para_logvar) * para_loss + model.para_logvar \
+                    + torch.exp(-model.sts_logvar) * sts_loss + model.sts_logvar
+                loss = loss.squeeze()
+                loss.backward()
             else:
                 loss = sst_loss + para_loss + sts_loss
                 loss.backward()
@@ -351,8 +400,6 @@ def train_multitask(args):
         if paraphrase_accuracy > best_dev_acc:
            best_dev_acc = paraphrase_accuracy
            save_model(model, optimizer, args, config, args.filepath)
-
-        #print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train acc :: {train_acc :.3f}, dev acc :: {dev_acc :.3f}")
 
         print(f"Epoch {epoch}: train loss :: {train_loss :.3f}")
 
@@ -483,8 +530,12 @@ def get_args():
 
     # Custom arguments
     #parser.add_argument("--multitask_alternate", type=bool, help="Train alternately among the tasks", default=True)
-    parser.add_argument("--pcgrad", type=bool, default=False)
-    parser.add_argument("--cos_sim", type=bool, default=False)
+    parser.add_argument("--pcgrad", action='store_true')
+    parser.add_argument("--pcgrad_w", action='store_true')
+    parser.add_argument("--cos_sim", action='store_true')
+    parser.add_argument("--u_w", action='store_true')
+    parser.add_argument("--undersample", action='store_true')
+
 
     args = parser.parse_args()
     return args
