@@ -78,29 +78,33 @@ class MultitaskBERT(nn.Module):
         ### TODO
 
         self.num_labels = 5 # 5 sentiment classes
-        # Linear classifiers
-        #self.sentiment_classifier = nn.Linear(config.hidden_size, self.num_labels)
-        #self.paraphrase_classifier = nn.Linear(2 * config.hidden_size, 1)
-        #self.similarity_classifier = nn.Linear(2 * config.hidden_size, 1)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         # MLP for classification
         self.sentiment_classifier = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            self.dropout,
+            nn.ReLU(), self.dropout,
             nn.Linear(config.hidden_size, self.num_labels)
             )
         self.paraphrase_classifier = nn.Sequential(
             nn.Linear(2 * config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            self.dropout,
+            nn.ReLU(), self.dropout,
             nn.Linear(config.hidden_size, 1)
             )   
         self.similarity_classifier = nn.Sequential(
-            nn.Linear(2 * config.hidden_size, config.hidden_size),
-            nn.ReLU(),
-            self.dropout,
+            nn.Linear(3 * config.hidden_size, config.hidden_size),
+            nn.ReLU(), self.dropout,
+            nn.Linear(config.hidden_size, 1)
+            )
+        # Sentence-pair archietecture
+        self.paraphrase_classifier_pair = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(), self.dropout,
+            nn.Linear(config.hidden_size, 1)
+            )   
+        self.similarity_classifier_pair = nn.Sequential(
+            nn.Linear(config.hidden_size, config.hidden_size),
+            nn.ReLU(), self.dropout,
             nn.Linear(config.hidden_size, 1)
             )
 
@@ -109,25 +113,16 @@ class MultitaskBERT(nn.Module):
         self.para_logvar = nn.Parameter(torch.zeros(1))
         self.sts_logvar = nn.Parameter(torch.zeros(1))
 
-        #
-
-        #raise NotImplementedError
-
-
     def forward(self, input_ids, attention_mask):
         'Takes a batch of sentences and produces embeddings for them.'
         # The final BERT embedding is the hidden state of [CLS] token (the first token)
         # Here, you can start by just returning the embeddings straight from BERT.
         # When thinking of improvements, you can later try modifying this
         # (e.g., by adding other layers).
-        ### TODO
 
         pooler_output = self.bert(input_ids, attention_mask)['pooler_output']
 
         return self.dropout(pooler_output)
-
-        raise NotImplementedError
-
 
     def predict_sentiment(self, input_ids, attention_mask):
         '''Given a batch of sentences, outputs logits for classifying sentiment.
@@ -135,14 +130,10 @@ class MultitaskBERT(nn.Module):
         (0 - negative, 1- somewhat negative, 2- neutral, 3- somewhat positive, 4- positive)
         Thus, your output should contain 5 logits for each sentence.
         '''
-        ### TODO
 
         embedding = self.forward(input_ids, attention_mask)
 
         return self.sentiment_classifier(embedding)
-
-        raise NotImplementedError
-
 
     def predict_paraphrase(self,
                            input_ids_1, attention_mask_1,
@@ -151,7 +142,6 @@ class MultitaskBERT(nn.Module):
         Note that your output should be unnormalized (a logit); it will be passed to the sigmoid function
         during evaluation.
         '''
-        ### TODO
 
         embedding_1 = self.forward(input_ids_1, attention_mask_1)
         embedding_2 = self.forward(input_ids_2, attention_mask_2)
@@ -159,36 +149,41 @@ class MultitaskBERT(nn.Module):
 
         return self.paraphrase_classifier(embedding_cat)
 
-        raise NotImplementedError
-
-
     def predict_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
         '''Given a batch of pairs of sentences, outputs a single logit corresponding to how similar they are.
         Note that your output should be unnormalized (a logit).
         '''
-        ### TODO
-
         embedding_1 = self.forward(input_ids_1, attention_mask_1)
         embedding_2 = self.forward(input_ids_2, attention_mask_2)
-        embedding_cat = torch.cat((embedding_1, embedding_2), dim=1)
+        # Sentence-BERT, 'Siamese'
+        embedding_cat = torch.cat((embedding_1, embedding_2, torch.abs(embedding_1 - embedding_2)), dim=1)
 
         return self.similarity_classifier(embedding_cat)
-    
-        raise NotImplementedError
     
     def predict_cosine_similarity(self,
                            input_ids_1, attention_mask_1,
                            input_ids_2, attention_mask_2):
         '''Given a batch of pairs of sentences, outputs the cosine embedding loss.
         '''
-        ### TODO
-
         embedding_1 = self.forward(input_ids_1, attention_mask_1)
         embedding_2 = self.forward(input_ids_2, attention_mask_2)
 
         return F.cosine_similarity(embedding_1, embedding_2, dim=1)
+
+    def predict_paraphrase_pair(self,
+                                input_ids, attention_mask):
+        pair_embedding = self.forward(input_ids, attention_mask)
+
+        return self.paraphrase_classifier_pair(pair_embedding)
+    
+    def predict_similarity_pair(self,
+                                input_ids, attention_mask):
+        pair_embedding = self.forward(input_ids, attention_mask)
+
+        return self.similarity_classifier_pair(pair_embedding)
+        
 
 def save_model(model, optimizer, args, config, filepath):
     save_info = {
@@ -303,27 +298,48 @@ def train_multitask(args):
             sst_logits = model.predict_sentiment(sst_ids, sst_mask)
             sst_loss = F.cross_entropy(sst_logits, sst_labels.view(-1), reduction='mean')
 
-            para_ids_1, para_mask_1, para_ids_2, para_mask_2, para_labels = (para_batch['token_ids_1'].to(device),
-                                    para_batch['attention_mask_1'].to(device), para_batch['token_ids_2'].to(device),
-                                    para_batch['attention_mask_2'].to(device), para_batch['labels'].to(device))
+            if args.pair:
+                para_ids, para_mask, para_labels = (para_batch['token_ids'].to(device),
+                                    para_batch['attention_mask'].to(device), para_batch['labels'].to(device))
 
-            para_logits = model.predict_paraphrase(para_ids_1, para_mask_1, para_ids_2, para_mask_2)
-            para_loss = F.binary_cross_entropy_with_logits(para_logits.squeeze(), para_labels.float().squeeze(), reduction='mean')
+                para_logits = model.predict_paraphrase_pair(para_ids, para_mask)
+                para_loss = F.binary_cross_entropy_with_logits(para_logits.squeeze(), para_labels.float().squeeze(), reduction='mean')
 
-            sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2, sts_labels = (sts_batch['token_ids_1'].to(device),
-                                    sts_batch['attention_mask_1'].to(device), sts_batch['token_ids_2'].to(device),
-                                    sts_batch['attention_mask_2'].to(device), sts_batch['labels'].to(device))
-            
-            # Simple cosine similarity
-            if args.cos_sim:
-                sts_similarity = model.predict_cosine_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
-                sts_loss = F.mse_loss(sts_similarity, sts_labels.float() / 5.0)
-            else:
-                sts_logits = model.predict_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
+                sts_ids, sts_mask, sts_labels = (sts_batch['token_ids'].to(device),
+                                        sts_batch['attention_mask'].to(device), sts_batch['labels'].to(device))
+                
+                sts_logits = model.predict_similarity_pair(sts_ids, sts_mask)
                 sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze() / 5.0, reduction='mean')
+
+            else:
+                para_ids_1, para_mask_1, para_ids_2, para_mask_2, para_labels = (para_batch['token_ids_1'].to(device),
+                                        para_batch['attention_mask_1'].to(device), para_batch['token_ids_2'].to(device),
+                                        para_batch['attention_mask_2'].to(device), para_batch['labels'].to(device))
+
+                para_logits = model.predict_paraphrase(para_ids_1, para_mask_1, para_ids_2, para_mask_2)
+                para_loss = F.binary_cross_entropy_with_logits(para_logits.squeeze(), para_labels.float().squeeze(), reduction='mean')
+
+                sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2, sts_labels = (sts_batch['token_ids_1'].to(device),
+                                        sts_batch['attention_mask_1'].to(device), sts_batch['token_ids_2'].to(device),
+                                        sts_batch['attention_mask_2'].to(device), sts_batch['labels'].to(device))
             
+                # Simple cosine similarity
+                if args.cos_sim:
+                    sts_similarity = model.predict_cosine_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
+                    sts_loss = F.mse_loss(sts_similarity, sts_labels.float() / 5.0)
+                # Cosine embedding loss
+                elif args.cos_loss:
+                    embedding_1 = model.forward(sts_ids_1, sts_mask_1)
+                    embedding_2 = model.forward(sts_ids_2, sts_mask_2)
+                    sts_labels_rescaled = sts_labels.float() / 2.5 - 1.0
+                    sts_loss = F.cosine_embedding_loss(embedding_1, embedding_2, sts_labels_rescaled.squeeze())
+                # MLP
+                else:
+                    sts_logits = model.predict_similarity(sts_ids_1, sts_mask_1, sts_ids_2, sts_mask_2)
+                    sts_loss = F.mse_loss(sts_logits.squeeze(), sts_labels.float().squeeze() / 5.0, reduction='mean')
+                
             # PCGrad implementation
-            if args.pcgrad:
+            if args.pcgrad or args.pcgrad_w:
                 optimizer.zero_grad()
                 sst_loss.backward(retain_graph=True)
                 sst_grad = [p.grad.clone() for p in model.bert.parameters() if p.grad is not None]
@@ -356,7 +372,7 @@ def train_multitask(args):
                 loss = sst_loss + para_loss + sts_loss
                 loss.backward()
 
-                for k, p in enumerate(model.parameters()):
+                for k, p in enumerate(model.bert.parameters()):
                     if p.grad != None:
                         p.grad = grads['sst'][k] + grads['para'][k] + grads['sts'][k]
             
@@ -533,8 +549,10 @@ def get_args():
     parser.add_argument("--pcgrad", action='store_true')
     parser.add_argument("--pcgrad_w", action='store_true')
     parser.add_argument("--cos_sim", action='store_true')
+    parser.add_argument("--cos_loss", action='store_true')
     parser.add_argument("--u_w", action='store_true')
     parser.add_argument("--undersample", action='store_true')
+    parser.add_argument("--pair", action='store_true')
 
 
     args = parser.parse_args()
