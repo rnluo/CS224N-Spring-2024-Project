@@ -1,0 +1,38 @@
+\begin{thebibliography}{1}
+
+\bibitem{devlin2019bert}
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova.
+\newblock Bert: Pre-training of deep bidirectional transformers for language understanding.
+\newblock In {\em Proceedings of the 2019 conference of the North American chapter of the association for computational linguistics: human language technologies, volume 1 (long and short papers)}, pages 4171--4186, 2019.
+
+\bibitem{bi2022mtrec}
+Qiwei Bi, Jian Li, Lifeng Shang, Xin Jiang, Qun Liu, and Hanfang Yang.
+\newblock Mtrec: Multi-task learning over bert for news recommendation.
+\newblock In {\em Findings of the association for computational linguistics: ACL 2022}, pages 2663--2669, 2022.
+
+\bibitem{kendall2018multi}
+Alex Kendall, Yarin Gal, and Roberto Cipolla.
+\newblock Multi-task learning using uncertainty to weigh losses for scene geometry and semantics.
+\newblock In {\em Proceedings of the IEEE conference on computer vision and pattern recognition}, pages 7482--7491, 2018.
+
+\bibitem{mohammed2020machine}
+Roweida Mohammed, Jumanah Rawashdeh, and Malak Abdullah.
+\newblock Machine learning with oversampling and undersampling techniques: overview study and experimental results.
+\newblock In {\em 2020 11th international conference on information and communication systems (ICICS)}, pages 243--248. IEEE, 2020.
+
+\bibitem{yu2020gradient}
+Tianhe Yu, Saurabh Kumar, Abhishek Gupta, Sergey Levine, Karol Hausman, and Chelsea Finn.
+\newblock Gradient surgery for multi-task learning.
+\newblock {\em Advances in neural information processing systems}, 33:5824--5836, 2020.
+
+\bibitem{socher2013recursive}
+Richard Socher, Alex Perelygin, Jean Wu, Jason Chuang, Christopher~D Manning, Andrew~Y Ng, and Christopher Potts.
+\newblock Recursive deep models for semantic compositionality over a sentiment treebank.
+\newblock In {\em Proceedings of the 2013 conference on empirical methods in natural language processing}, pages 1631--1642, 2013.
+
+\bibitem{agirre2013sem}
+Eneko Agirre, Daniel Cer, Mona Diab, Aitor Gonzalez-Agirre, and Weiwei Guo.
+\newblock * sem 2013 shared task: Semantic textual similarity.
+\newblock In {\em Second joint conference on lexical and computational semantics (* SEM), volume 1: proceedings of the Main conference and the shared task: semantic textual similarity}, pages 32--43, 2013.
+
+\end{thebibliography}

@@ -75,7 +75,6 @@ class MultitaskBERT(nn.Module):
             elif config.fine_tune_mode == 'full-model':
                 param.requires_grad = True
         # You will want to add layers here to perform the downstream tasks.
-        ### TODO
 
         self.num_labels = 5 # 5 sentiment classes
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -157,7 +156,6 @@ class MultitaskBERT(nn.Module):
         '''
         embedding_1 = self.forward(input_ids_1, attention_mask_1)
         embedding_2 = self.forward(input_ids_2, attention_mask_2)
-        # Sentence-BERT, 'Siamese'
         embedding_cat = torch.cat((embedding_1, embedding_2, torch.abs(embedding_1 - embedding_2)), dim=1)
 
         return self.similarity_classifier(embedding_cat)
@@ -369,25 +367,27 @@ def train_multitask(args):
                         grads[task_i] = [g_ik - scale * g_jk for g_ik, g_jk in zip(g_i, g_j)]
 
                 optimizer.zero_grad()
-                loss = sst_loss + para_loss + sts_loss
-                loss.backward()
+
+                # Uncertainty weighting
+                if args.u_w:
+                    loss = torch.exp(-model.sst_logvar) * sst_loss + model.sst_logvar \
+                    + torch.exp(-model.para_logvar) * para_loss + model.para_logvar \
+                    + torch.exp(-model.sts_logvar) * sts_loss + model.sts_logvar
+                    loss = loss.squeeze()
+                    loss.backward()
+                else:
+                    loss = sst_loss + para_loss + sts_loss
+                    loss.backward()
+
+                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
                 for k, p in enumerate(model.bert.parameters()):
                     if p.grad != None:
                         p.grad = grads['sst'][k] + grads['para'][k] + grads['sts'][k]
-            
-            # Uncertainty weighting implementation
-            elif args.u_w:
-                loss = torch.exp(-model.sst_logvar) * sst_loss + model.sst_logvar \
-                    + torch.exp(-model.para_logvar) * para_loss + model.para_logvar \
-                    + torch.exp(-model.sts_logvar) * sts_loss + model.sts_logvar
-                loss = loss.squeeze()
-                loss.backward()
+                
             else:
                 loss = sst_loss + para_loss + sts_loss
                 loss.backward()
-
-            loss = sst_loss + para_loss + sts_loss
 
             writer.add_scalar('loss/train_total', loss, global_step)
             writer.add_scalar('loss/train_sst', sst_loss, global_step)
@@ -402,9 +402,6 @@ def train_multitask(args):
         train_loss = train_loss / (num_batches)
 
         writer.add_scalar('loss/train_epoch', train_loss, epoch)
-
-        # train_acc, train_f1, *_ = model_eval_sst(sst_train_dataloader, model, device)
-        # dev_acc, dev_f1, *_ = model_eval_sst(sst_dev_dataloader, model, device)
 
         sentiment_accuracy, _, _, paraphrase_accuracy, _, _, sts_corr, _, _ \
             = model_eval_multitask(sst_dev_dataloader, para_dev_dataloader, sts_dev_dataloader, model, device)
@@ -509,7 +506,6 @@ def test_multitask(args):
             for p, s in zip(test_sts_sent_ids, test_sts_y_pred):
                 f.write(f"{p} , {s} \n")
 
-
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sst_train", type=str, default="data/ids-sst-train.csv")
@@ -545,7 +541,6 @@ def get_args():
     parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
 
     # Custom arguments
-    #parser.add_argument("--multitask_alternate", type=bool, help="Train alternately among the tasks", default=True)
     parser.add_argument("--pcgrad", action='store_true')
     parser.add_argument("--pcgrad_w", action='store_true')
     parser.add_argument("--cos_sim", action='store_true')
